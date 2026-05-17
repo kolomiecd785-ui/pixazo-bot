@@ -19,8 +19,7 @@ TOGETHER_API_KEY = "tgp_v1_9P6y0kMQFvxzzo3yFpyF21ryGKMm2_4p06HzpHOb-P0"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ИСПРАВЛЕНО: Официальный метод подключения к Together AI через SDK OpenAI. 
-# Это автоматически добавляет правильные B2B заголовки и обходит Cloudflare 403!
+# Инициализируем официальный клиент OpenAI под шлюз Together AI
 ai_client = AsyncOpenAI(
     api_key=TOGETHER_API_KEY,
     base_url="https://together.xyz"
@@ -94,8 +93,8 @@ async def translate_to_english(text: str) -> str:
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
-                if result and isinstance(result, list) and len(result) > 0 and result[0]:
-                    translated_text = "".join([str(part[0]) for part in result[0] if part and part[0]])
+                if result and isinstance(result, list) and len(result) > 0 and result:
+                    translated_text = "".join([str(part) for part in result if part and part])
                     if translated_text:
                         return translated_text.strip()
     except Exception as e:
@@ -134,7 +133,7 @@ async def handle_user_request(message: types.Message):
 
     user_text = message.text.lower().strip()
     
-    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ (ЧЕРЕЗ ОФИЦИАЛЬНЫЙ SDK)
+    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ (ИСПРАВЛЕНО НА .images)
     if user_text.startswith(("нарисуй", "картинка", "фото", "draw", "image", "picture")):
         wait = await message.answer(f"🎨 **Syntax AI** генерирует изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
         try:
@@ -145,15 +144,13 @@ async def handle_user_request(message: types.Message):
             
             english_prompt = await translate_to_english(clean_prompt)
             
-            # SDK автоматически соберёт правильный URL без редиректов на Webflow!
             response = await ai_client.images.generate(
                 model="black-forest-labs/FLUX.1-schnell",
                 prompt=english_prompt,
                 n=1
             )
             
-            # Точное извлечение ссылки из объекта ответа SDK
-            image_url = response.data[0].url
+            image_url = response.data.url
             
             if not image_url:
                 raise Exception("Не удалось получить прямую ссылку.")
@@ -170,11 +167,10 @@ async def handle_user_request(message: types.Message):
             logging.error(f"Помилка фото: {e}")
             await wait.edit_text(f"❌ Ошибка при создании фото: {str(e)[:150]}")
 
-    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ (ЧЕРЕЗ ОФИЦИАЛЬНЫЙ SDK)
+    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ (ИСПРАВЛЕНО НА .chat)
     else:
         wait = await message.answer("⚡ **Syntax AI** думает над ответом...")
         try:
-            # SDK сам соберёт путь /chat/completions и пройдёт защиту Cloudflare!
             response = await ai_client.chat.completions.create(
                 model="meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
                 messages=[
@@ -184,8 +180,7 @@ async def handle_user_request(message: types.Message):
                 max_tokens=1500
             )
             
-            # Точное извлечение текстового ответа из объекта SDK
-            reply_text = response.choices[0].message.content
+            reply_text = response.choices.message.content
             
             if not reply_text:
                 raise Exception("Не удалось извлечь текст.")
