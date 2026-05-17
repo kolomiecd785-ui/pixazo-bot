@@ -6,8 +6,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile
 import httpx
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,6 +18,12 @@ TOGETHER_API_KEY = "tgp_v1_9P6y0kMQFvxzzo3yFpyF21ryGKMm2_4p06HzpHOb-P0"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+# Инициализируем официальный клиент OpenAI, перенаправленный на сервера Together AI
+ai_client = AsyncOpenAI(
+    api_key=TOGETHER_API_KEY,
+    base_url="https://together.xyz"
+)
 
 # --- НАСТРОЙКА БАЗЫ ДАННЫХ SQLITE ---
 DB_NAME = "users.db"
@@ -80,21 +86,42 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
+# --- ФУНКЦИЯ АВТО-ПЕРЕВОДА НА АНГЛИЙСКИЙ ---
+async def translate_to_english(text: str) -> str:
+    try:
+        async with httpx.AsyncClient() as client:
+            url = "https://googleapis.com"
+            params = {
+                "client": "gtx",
+                "sl": "auto",
+                "tl": "en",
+                "dt": "t",
+                "q": text
+            }
+            response = await client.get(url, params=params, timeout=5.0)
+            if response.status_code == 200:
+                result = response.json()
+                translated_text = "".join([part[0] for part in result[0] if part[0]])
+                return translated_text.strip()
+    except Exception as e:
+        logging.error(f"Помилка перекладу: {e}")
+    return text
+
 # --- ХЕНДЛЕРЫ ТЕЛЕГРАМ БОТА ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
     can_generate, limit, is_prem = check_user_limit(message.from_user.id)
     
     text = (
-        f"👋 Привіт, {message.from_user.first_name}! Ласкаво просимо до **Syntax AI** 🚀\n\n"
-        f"Я генерую неймовірні зображення за допомогою моделі **Flux 1 Schnell** від Together AI.\n"
+        f"👋 Привет, {message.from_user.first_name}! Добро пожаловать в **DM ПОМОЩНИК** 🚀\n\n"
+        f"Я генерирую невероятные изображения с помощью передовой нейросети **Flux 1 Schnell**.\n"
     )
     if not is_prem:
-        text += f"🎁 Вам доступно: **{limit} безкоштовних генерацій**."
+        text += f"🎁 Вам доступно: **{limit} бесплатных генераций**."
     else:
-        text += "👑 У вас активована безлімітна **Premium підписка**!"
+        text += "👑 У вас активирована безлимитная **Premium подписка**!"
         
-    text += "\n\nПросто напиши мені опис картинки англійською мовою."
+    text += "\n\nПросто напиши мне описание картинки на **любом языке** (я всё пойму и переведу сам)!"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message()
@@ -104,64 +131,50 @@ async def generate_image(message: types.Message):
     
     if not can_generate:
         await message.answer(
-            "❌ **У вас закінчилися безкоштовні генерації!**\n\n"
-            "Щоб продовжити створювати шедеври без обмежень, оформлюйте Premium-підписку всього за **150 грн / місяць**.\n\n"
-            "💳 _Для активації підписки зверніться до адміністратора або натисніть кнопку ниже._",
+            "❌ **У вас закончились бесплатные генерации!**\n\n"
+            "Чтобы продолжить создавать шедеври без ограничений, оформляйте Premium-подписку всего за **150 грн / месяц**.\n\n"
+            "💳 _Для активации подписки обратитесь к администратору._",
             parse_mode="Markdown"
         )
         return
 
-    wait = await message.answer(f"🎨 **Syntax AI** створює ваше зображення... (Залишилось спроб: {limit if not is_prem else '∞'})")
+    wait = await message.answer(f"🎨 **Syntax AI** создаёт ваше изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
 
     try:
-        timeout = httpx.Timeout(60.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            
-            # Официальный B2B запрос к Together AI
-            resp = await client.post(
-                "https://together.xyz",
-                json={
-                    "model": "black-forest-labs/FLUX.1-schnell",
-                    "prompt": message.text,
-                    "width": 1024,
-                    "height": 576,
-                    "steps": 4,
-                    "n": 1
-                },
-                headers={
-                    "Authorization": f"Bearer {TOGETHER_API_KEY}",
-                    "Content-Type": "application/json"
-                }
-            )
-            
-            if resp.status_code != 200:
-                raise Exception(f"Together AI HTTP {resp.status_code}: {resp.text[:150]}")
-                
-            result = resp.json()
-            logging.info(f"Відповідь Together AI: {result}")
-            
-            # ИСПРАВЛЕННЫЙ ТОЧНЫЙ ПАРСИНГ: Извлекаем ссылку из массива data
-            image_url = None
-            if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
-                image_url = result["data"][0].get("url")
-                
-            if not image_url:
-                raise Exception(f"Не вдалося знайти URL у відповіді: {str(result)[:100]}")
-            
-            # Отправляем фото по прямой ссылке
-            await bot.send_photo(
-                chat_id=message.chat.id,
-                photo=image_url.strip(),
-                caption=f"✅ **Готово за запитом:**\n_{message.text}_",
-                parse_mode="Markdown"
-            )
-            
-            decrease_limit(user_id)
-            await wait.delete()
+        # Автоматически переводим запрос
+        english_prompt = await translate_to_english(message.text)
+        logging.info(f"Оригинал: {message.text} -> Перевод: {english_prompt}")
+        
+        # Используем официальный SDK для генерации картинок через Together AI
+        response = await ai_client.images.generate(
+            model="black-forest-labs/FLUX.1-schnell",
+            prompt=english_prompt,
+            width=1024,
+            height=576,
+            steps=4,
+            n=1
+        )
+        
+        # Безопасно достаем готовую ссылку из SDK
+        image_url = response.data[0].url
+        
+        if not image_url:
+            raise Exception("Не удалось извлечь URL из ответа нейросети.")
+        
+        # Отправляем фото в Telegram
+        await bot.send_photo(
+            chat_id=message.chat.id,
+            photo=image_url.strip(),
+            caption=f"✅ **Готово по вашему запросу:**\n_{message.text}_",
+            parse_mode="Markdown"
+        )
+        
+        decrease_limit(user_id)
+        await wait.delete()
 
     except Exception as e:
-        logging.error(f"Помилка генерації Together AI: {e}")
-        await wait.edit_text(f"❌ Помилка нейромережі: {str(e)[:150]}")
+        logging.error(f"Помилка генерації Together: {e}")
+        await wait.edit_text(f"❌ Ошибка нейросети: {str(e)[:150]}")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
