@@ -19,7 +19,7 @@ TOGETHER_API_KEY = "tgp_v1_9P6y0kMQFvxzzo3yFpyF21ryGKMm2_4p06HzpHOb-P0"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавлен точный B2B-путь генерации картинок, чтобы избежать редиректа на Webflow
+# ИСПРАВЛЕНО: Полный и точный B2B-путь, который совместим с библиотекой OpenAI
 ai_client = AsyncOpenAI(
     api_key=TOGETHER_API_KEY,
     base_url="https://together.xyz"
@@ -58,10 +58,8 @@ def check_user_limit(user_id):
     
     if is_premium == 1:
         return True, 999, True
-    
     if free_limit > 0:
         return True, free_limit, False
-        
     return False, 0, False
 
 def decrease_limit(user_id):
@@ -91,18 +89,11 @@ async def translate_to_english(text: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
             url = "https://googleapis.com"
-            params = {
-                "client": "gtx",
-                "sl": "auto",
-                "tl": "en",
-                "dt": "t",
-                "q": text
-            }
+            params = {"client": "gtx", "sl": "auto", "tl": "en", "dt": "t", "q": text}
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
-                translated_text = "".join([part for part in result if part])
-                return translated_text.strip()
+                return "".join([part[0] for part in result[0] if part[0]]).strip()
     except Exception as e:
         logging.error(f"Помилка перекладу: {e}")
     return text
@@ -111,67 +102,85 @@ async def translate_to_english(text: str) -> str:
 @dp.message(Command("start"))
 async def start(message: types.Message):
     can_generate, limit, is_prem = check_user_limit(message.from_user.id)
-    
     text = (
         f"👋 Привет, {message.from_user.first_name}! Добро пожаловать в **Syntax AI** 🚀\n\n"
-        f"Я генерирую невероятные изображения с помощью передовой нейросети **Flux 1 Schnell**.\n"
+        f"💡 **Я умею абсолютно всё:**\n"
+        f"1. 📝 **Писать тексты**, статьи, посты, отвечать на любые вопросы (просто пиши мне).\n"
+        f"2. 🎨 **Генерировать картинки** через ИИ Flux. Начни запрос со слова **нарисуй**, **картинка** или **фото**.\n\n"
     )
     if not is_prem:
-        text += f"🎁 Вам доступно: **{limit} бесплатных генераций**."
+        text += f"🎁 Вам доступно: **{limit} бесплатных попыток** (для текста и фото)."
     else:
         text += "👑 У вас активирована безлимитная **Premium подписка**!"
-        
-    text += "\n\nПросто напиши мне описание картинки на **любом языке** (я всё пойму и переведу сам)!"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message()
-async def generate_image(message: types.Message):
+async def handle_user_request(message: types.Message):
     user_id = message.from_user.id
     can_generate, limit, is_prem = check_user_limit(user_id)
     
     if not can_generate:
         await message.answer(
-            "❌ **У вас закончились бесплатные генерации!**\n\n"
-            "Чтобы продолжить создавать шедевры без ограничений, оформляйте Premium-подписку всего за **150 грн / месяц**.\n\n"
+            "❌ **У вас закончились бесплатные попытки!**\n\n"
+            "Чтобы продолжить общаться и создавать шедевры без ограничений, оформляйте Premium-подписку всего за **150 грн / месяц**.\n\n"
             "💳 _Для активации подписки обратитесь к администратору._",
             parse_mode="Markdown"
         )
         return
 
-    wait = await message.answer(f"🎨 **Syntax AI** создаёт ваше изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
+    user_text = message.text.lower().strip()
+    
+    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ
+    if user_text.startswith(("нарисуй", "картинка", "фото", "draw", "image", "picture")):
+        wait = await message.answer(f"🎨 **Syntax AI** генерирует ваше изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
+        try:
+            clean_prompt = message.text
+            for word in ["нарисуй", "картинка", "фото", "draw", "image", "picture"]:
+                if user_text.startswith(word):
+                    clean_prompt = clean_prompt[len(word):].strip()
+            
+            english_prompt = await translate_to_english(clean_prompt)
+            
+            # Используем стандартный вызов картинок
+            response = await ai_client.images.generate(
+                model="black-forest-labs/FLUX.1-schnell",
+                prompt=english_prompt,
+                n=1
+            )
+            image_url = response.data[0].url
+            
+            await bot.send_photo(
+                chat_id=message.chat.id,
+                photo=image_url.strip(),
+                caption=f"✅ **Готово по вашему запросу:**\n_{clean_prompt}_",
+                parse_mode="Markdown"
+            )
+            decrease_limit(user_id)
+            await wait.delete()
+        except Exception as e:
+            logging.error(f"Помилка фото: {e}")
+            await wait.edit_text(f"❌ Ошибка нейросети при создании фото: {str(e)[:150]}")
 
-    try:
-        # Переводим запрос
-        english_prompt = await translate_to_english(message.text)
-        logging.info(f"Оригинал: {message.text} -> Перевод: {english_prompt}")
-        
-        # Генерируем картинку по чистому B2B пути
-        response = await ai_client.images.generate(
-            model="black-forest-labs/FLUX.1-schnell",
-            prompt=english_prompt,
-            size="1024x768",
-            n=1
-        )
-        
-        image_url = response.data.url
-        
-        if not image_url:
-            raise Exception("Не удалось извлечь URL из ответа нейросети.")
-        
-        # Отправляем готовое фото в Telegram
-        await bot.send_photo(
-            chat_id=message.chat.id,
-            photo=image_url.strip(),
-            caption=f"✅ **Готово по вашему запросу:**\n_{message.text}_",
-            parse_mode="Markdown"
-        )
-        
-        decrease_limit(user_id)
-        await wait.delete()
-
-    except Exception as e:
-        logging.error(f"Помилка генерації Together: {e}")
-        await wait.edit_text(f"❌ Ошибка нейросети: {str(e)[:150]}")
+    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ
+    else:
+        wait = await message.answer("⚡ **Syntax AI** думает над ответом...")
+        try:
+            response = await ai_client.chat.completions.create(
+                model="meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+                messages=[
+                    {"role": "system", "content": "Ты профессиональный ИИ-ассистент Syntax AI. Отвечай дружелюбно, четко, информативно и строго на языке пользователя."},
+                    {"role": "user", "content": message.text}
+                ],
+                max_tokens=1500
+            )
+            
+            reply_text = response.choices[0].message.content
+            await message.answer(reply_text)
+            decrease_limit(user_id)
+            await wait.delete()
+        except Exception as e:
+            logging.error(f"Помилка тексту: {e}")
+            await wait.edit_text(f"❌ Ошибка нейросети при создании текста: {str(e)[:150]}")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
