@@ -6,9 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import httpx
-from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,12 +17,6 @@ TOGETHER_API_KEY = "tgp_v1_9P6y0kMQFvxzzo3yFpyF21ryGKMm2_4p06HzpHOb-P0"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
-# Инициализируем клиента под стандарты Together AI
-ai_client = AsyncOpenAI(
-    api_key=TOGETHER_API_KEY,
-    base_url="https://together.xyz"
-)
 
 # --- НАСТРОЙКА БАЗЫ ДАННЫХ SQLITE ---
 DB_NAME = "users.db"
@@ -95,22 +87,12 @@ async def translate_to_english(text: str) -> str:
             if response.status_code == 200:
                 result = response.json()
                 if result and isinstance(result, list) and len(result) > 0:
-                    translated_parts = []
-                    for part in result[0]:
-                        if part and isinstance(part, list) and len(part) > 0:
-                            translated_parts.append(str(part[0]))
-                    if translated_parts:
-                        return "".join(translated_parts).strip()
+                    translated_text = "".join([part for part in result if part and isinstance(part, str)])
+                    if translated_text:
+                        return translated_text.strip()
     except Exception as e:
         logging.error(f"Помилка перекладу: {e}")
     return text
-
-# --- КНОПКА КУПИТЬ ПОДПИСКУ ---
-def get_payment_keyboard():
-    buttons = [
-        [InlineKeyboardButton(text="💳 Оформить Premium (150 грн)", url="https://t.me")] # Ссылка на ваш профиль для ручной оплаты, пока не подключен банк
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # --- ХЕНДЛЕРЫ ТЕЛЕГРАМ БОТА ---
 @dp.message(Command("start"))
@@ -136,15 +118,15 @@ async def handle_user_request(message: types.Message):
     if not can_generate:
         await message.answer(
             "❌ **У вас закончились бесплатные попытки!**\n\n"
-            "Чтобы продолжить общаться и создавать шедевры без ограничений, оформляйте Premium-подписку всего за **150 грн / месяц**.",
-            reply_markup=get_payment_keyboard(),
+            "Чтобы продолжить общаться и создавать шедевры без ограничений, оформляйте Premium-подписку всего за **150 грн / месяц**.\n\n"
+            "💳 _Для активации подписки обратитесь к администратору._",
             parse_mode="Markdown"
         )
         return
 
     user_text = message.text.lower().strip()
     
-    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ
+    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ (ПРЯМОЙ HTTPX ЗАПРОС)
     if user_text.startswith(("нарисуй", "картинка", "фото", "draw", "image", "picture")):
         wait = await message.answer(f"🎨 **Syntax AI** генерирует ваше изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
         try:
@@ -155,17 +137,28 @@ async def handle_user_request(message: types.Message):
             
             english_prompt = await translate_to_english(clean_prompt)
             
-            response = await ai_client.images.generate(
-                model="black-forest-labs/FLUX.1-schnell",
-                prompt=english_prompt,
-                n=1
-            )
-            
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавлен индекс [0] для извлечения ссылки по стандартам SDK
-            image_url = response.data[0].url
-            
-            if not image_url:
-                raise Exception("Не удалось извлечь URL из ответа нейросети.")
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    "https://together.xyz",
+                    json={
+                        "model": "black-forest-labs/FLUX.1-schnell",
+                        "prompt": english_prompt,
+                        "width": 1024,
+                        "height": 768,
+                        "steps": 4,
+                        "n": 1
+                    },
+                    headers={
+                        "Authorization": f"Bearer {TOGETHER_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                )
+                
+                if resp.status_code != 200:
+                    raise Exception(f"Together HTTP {resp.status_code}: {resp.text[:100]}")
+                
+                result = resp.json()
+                image_url = result["data"][0]["url"]
             
             await bot.send_photo(
                 chat_id=message.chat.id,
@@ -177,30 +170,41 @@ async def handle_user_request(message: types.Message):
             await wait.delete()
         except Exception as e:
             logging.error(f"Помилка фото: {e}")
-            await wait.edit_text(f"❌ Ошибка нейросети при создании фото: {str(e)[:150]}")
+            await wait.edit_text(f"❌ Ошибка при создании фото: {str(e)[:150]}")
 
-    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ
+    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ (ПРЯМОЙ HTTPX ЗАПРОС)
     else:
         wait = await message.answer("⚡ **Syntax AI** думает над ответом...")
         try:
-            response = await ai_client.chat.completions.create(
-                model="meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-                messages=[
-                    {"role": "system", "content": "Ты профессиональный ИИ-ассистент Syntax AI. Отвечай дружелюбно, четко, информативно и строго на языке пользователя."},
-                    {"role": "user", "content": message.text}
-                ],
-                max_tokens=1500
-            )
-            
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавлен индекс [0] для извлечения текстового ответа
-            reply_text = response.choices[0].message.content
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    "https://together.xyz",
+                    json={
+                        "model": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+                        "messages": [
+                            {"role": "system", "content": "Ты профессиональный ИИ-ассистент Syntax AI. Отвечай дружелюбно, четко, информативно и строго на языке пользователя."},
+                            {"role": "user", "content": message.text}
+                        ],
+                        "max_tokens": 1500
+                    },
+                    headers={
+                        "Authorization": f"Bearer {TOGETHER_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                )
+                
+                if resp.status_code != 200:
+                    raise Exception(f"Together HTTP {resp.status_code}: {resp.text[:100]}")
+                
+                result = resp.json()
+                reply_text = result["choices"][0]["message"]["content"]
             
             await message.answer(reply_text)
             decrease_limit(user_id)
             await wait.delete()
         except Exception as e:
             logging.error(f"Помилка тексту: {e}")
-            await wait.edit_text(f"❌ Ошибка нейросети при создании текста: {str(e)[:150]}")
+            await wait.edit_text(f"❌ Ошибка при создании текста: {str(e)[:150]}")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
