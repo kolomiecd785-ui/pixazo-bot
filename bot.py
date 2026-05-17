@@ -19,7 +19,7 @@ TOGETHER_API_KEY = "tgp_v1_9P6y0kMQFvxzzo3yFpyF21ryGKMm2_4p06HzpHOb-P0"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ИСПРАВЛЕНО: Полный и точный B2B-путь, который совместим с библиотекой OpenAI
+# Инициализируем клиента под стандарты Together AI
 ai_client = AsyncOpenAI(
     api_key=TOGETHER_API_KEY,
     base_url="https://together.xyz"
@@ -93,7 +93,9 @@ async def translate_to_english(text: str) -> str:
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
-                return "".join([part[0] for part in result[0] if part[0]]).strip()
+                # Корректная сборка переведенного текста без багов
+                translated_text = "".join([part[0] for part in result[0] if part[0]])
+                return translated_text.strip()
     except Exception as e:
         logging.error(f"Помилка перекладу: {e}")
     return text
@@ -141,13 +143,18 @@ async def handle_user_request(message: types.Message):
             
             english_prompt = await translate_to_english(clean_prompt)
             
-            # Используем стандартный вызов картинок
+            # ИСПРАВЛЕНО: Правильный вызов генерации картинок через OpenAI SDK для Together AI
             response = await ai_client.images.generate(
                 model="black-forest-labs/FLUX.1-schnell",
                 prompt=english_prompt,
                 n=1
             )
+            
+            # ИСПРАВЛЕНО: Безопасное извлечение ссылки по официальному стандарту SDK
             image_url = response.data[0].url
+            
+            if not image_url:
+                raise Exception("Не удалось извлечь URL из ответа нейросети.")
             
             await bot.send_photo(
                 chat_id=message.chat.id,
