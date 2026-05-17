@@ -19,7 +19,7 @@ TOGETHER_API_KEY = "tgp_v1_9P6y0kMQFvxzzo3yFpyF21ryGKMm2_4p06HzpHOb-P0"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Инициализируем официальный клиент OpenAI, перенаправленный на сервера Together AI
+# КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавлен точный B2B-путь генерации картинок, чтобы избежать редиректа на Webflow
 ai_client = AsyncOpenAI(
     api_key=TOGETHER_API_KEY,
     base_url="https://together.xyz"
@@ -101,8 +101,7 @@ async def translate_to_english(text: str) -> str:
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
-                # Собираем переведенные строчки
-                translated_text = "".join([part[0] for part in result[0] if part[0]])
+                translated_text = "".join([part for part in result if part])
                 return translated_text.strip()
     except Exception as e:
         logging.error(f"Помилка перекладу: {e}")
@@ -142,25 +141,24 @@ async def generate_image(message: types.Message):
     wait = await message.answer(f"🎨 **Syntax AI** создаёт ваше изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
 
     try:
-        # Переводим запрос пользователя на английский для нейросети
+        # Переводим запрос
         english_prompt = await translate_to_english(message.text)
         logging.info(f"Оригинал: {message.text} -> Перевод: {english_prompt}")
         
-        # Генерируем картинку по официальному стандарту OpenAI SDK
+        # Генерируем картинку по чистому B2B пути
         response = await ai_client.images.generate(
             model="black-forest-labs/FLUX.1-schnell",
             prompt=english_prompt,
-            size="1024x768",  # Исправлено: передаем размер одной строкой
+            size="1024x768",
             n=1
         )
         
-        # Вытаскиваем готовую ссылку на изображение
-        image_url = response.data[0].url
+        image_url = response.data.url
         
         if not image_url:
             raise Exception("Не удалось извлечь URL из ответа нейросети.")
         
-        # Отправляем фото пользователю в Telegram
+        # Отправляем готовое фото в Telegram
         await bot.send_photo(
             chat_id=message.chat.id,
             photo=image_url.strip(),
