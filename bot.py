@@ -77,7 +77,7 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# --- ИСПРАВЛЕННАЯ СТАБИЛЬНАЯ ФУНКЦИЯ ПЕРЕВОДА ---
+# --- БЕЗОПАСНАЯ ФУНКЦИЯ ПЕРЕВОДА ---
 async def translate_to_english(text: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
@@ -86,14 +86,8 @@ async def translate_to_english(text: str) -> str:
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
-                # ИСПРАВЛЕНО: Безопасное извлечение только переведенной строки
-                if result and isinstance(result, list) and len(result) > 0 and result[0]:
-                    translated_text = ""
-                    for item in result[0]:
-                        if item and isinstance(item, list) and len(item) > 0 and isinstance(item[0], str):
-                            translated_text += item[0]
-                    if translated_text:
-                        return translated_text.strip()
+                if result and isinstance(result, list) and len(result) > 0:
+                    return "".join([str(p[0]) for p in result[0] if p and isinstance(p, list) and p[0]]).strip()
     except Exception as e:
         logging.error(f"Помилка перекладу: {e}")
     return text
@@ -130,9 +124,9 @@ async def handle_user_request(message: types.Message):
 
     user_text = message.text.lower().strip()
     
-    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ
+    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ (Flux)
     if user_text.startswith(("нарисуй", "картинка", "фото", "draw", "image", "picture")):
-        wait = await message.answer(f"🎨 **Syntax AI** генерирует ваше изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
+        wait = await message.answer(f"🎨 **Syntax AI** ставит задачу в очередь Flux... (Осталось попыток: {limit if not is_prem else '∞'})")
         try:
             clean_prompt = message.text
             for word in ["нарисуй", "картинка", "фото", "draw", "image", "picture"]:
@@ -140,7 +134,6 @@ async def handle_user_request(message: types.Message):
                     clean_prompt = clean_prompt[len(word):].strip()
             
             english_prompt = await translate_to_english(clean_prompt)
-            logging.info(f"Чистый промпт для Flux: {english_prompt}")
             
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(
@@ -153,31 +146,54 @@ async def handle_user_request(message: types.Message):
                         "steps": 4,
                         "n": 1
                     },
-                    headers={
-                        "Authorization": f"Bearer {TOGETHER_API_KEY}",
-                        "Content-Type": "application/json"
-                    }
+                    headers={"Authorization": f"Bearer {TOGETHER_API_KEY}", "Content-Type": "application/json"}
                 )
                 
-                if resp.status_code != 200:
-                    raise Exception(f"Together HTTP {resp.status_code}: {resp.text[:100]}")
+                if resp.status_code not in [200, 202]:
+                    raise Exception(f"HTTP {resp.status_code}: {resp.text[:100]}")
                 
                 result = resp.json()
-                image_url = result["data"][0]["url"]
-            
-            await bot.send_photo(
-                chat_id=message.chat.id,
-                photo=image_url.strip(),
-                caption=f"✅ **Готово по вашему запросу:**\n_{clean_prompt}_",
-                parse_mode="Markdown"
-            )
-            decrease_limit(user_id)
-            await wait.delete()
+                
+                # Пошаговый и безопасный разбор асинхронного ответа Together AI
+                image_url = None
+                if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
+                    image_url = result["data"][0].get("url")
+                elif "output" in result:
+                    image_url = result.get("output")
+                
+                # Если сервер вернул ID задачи вместо прямой ссылки, запускаем цикл ожидания (Polling)
+                if not image_url and ("id" in result or "request_id" in result):
+                    task_id = result.get("id") or result.get("request_id")
+                    for attempt in range(15):
+                        await asyncio.sleep(3)
+                        await wait.edit_text(f"🎨 Нейросеть рисует... Проверка статуса ({attempt + 1}/15)")
+                        status_resp = await client.get(
+                            f"https://together.xyz{task_id}",
+                            headers={"Authorization": f"Bearer {TOGETHER_API_KEY}"}
+                        )
+                        if status_resp.status_code == 200:
+                            status_data = status_resp.json()
+                            if status_data.get("status") == "completed":
+                                image_url = status_data.get("output") or status_data["data"][0].get("url")
+                                break
+                
+                if not image_url:
+                    raise Exception("Сервер Together AI перегружен или вернул пустой статус задачи.")
+                
+                # Отправляем готовую картинку в Telegram
+                await bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=image_url.strip(),
+                    caption=f"✅ **Готово по вашему запросу:**\n_{clean_prompt}_",
+                    parse_mode="Markdown"
+                )
+                decrease_limit(user_id)
+                await wait.delete()
         except Exception as e:
             logging.error(f"Помилка фото: {e}")
             await wait.edit_text(f"❌ Ошибка при создании фото: {str(e)[:150]}")
 
-    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ
+    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ (Llama 3.1)
     else:
         wait = await message.answer("⚡ **Syntax AI** думает над ответом...")
         try:
@@ -192,21 +208,40 @@ async def handle_user_request(message: types.Message):
                         ],
                         "max_tokens": 1500
                     },
-                    headers={
-                        "Authorization": f"Bearer {TOGETHER_API_KEY}",
-                        "Content-Type": "application/json"
-                    }
+                    headers={"Authorization": f"Bearer {TOGETHER_API_KEY}", "Content-Type": "application/json"}
                 )
                 
-                if resp.status_code != 200:
-                    raise Exception(f"Together HTTP {resp.status_code}: {resp.text[:100]}")
+                if resp.status_code not in [200, 202]:
+                    raise Exception(f"HTTP {resp.status_code}: {resp.text[:100]}")
                 
                 result = resp.json()
-                reply_text = result["choices"][0]["message"]["content"]
-            
-            await message.answer(reply_text)
-            decrease_limit(user_id)
-            await wait.delete()
+                
+                # Безопасный разбор текстового ответа
+                reply_text = None
+                if "choices" in result and isinstance(result["choices"], list) and len(result["choices"]) > 0:
+                    reply_text = result["choices"][0].get("message", {}).get("content")
+                
+                # Если чат-шлюз тоже выдал асинхронную задачу в очередь
+                if not reply_text and ("id" in result or "request_id" in result):
+                    task_id = result.get("id") or result.get("request_id")
+                    for attempt in range(15):
+                        await asyncio.sleep(2)
+                        status_resp = await client.get(
+                            f"https://together.xyz{task_id}",
+                            headers={"Authorization": f"Bearer {TOGETHER_API_KEY}"}
+                        )
+                        if status_resp.status_code == 200:
+                            status_data = status_resp.json()
+                            if status_data.get("status") == "completed":
+                                reply_text = status_data["choices"][0]["message"]["content"]
+                                break
+                
+                if not reply_text:
+                    raise Exception("Не удалось дождаться ответа от текстовой модели.")
+                
+                await message.answer(reply_text)
+                decrease_limit(user_id)
+                await wait.delete()
         except Exception as e:
             logging.error(f"Помилка тексту: {e}")
             await wait.edit_text(f"❌ Ошибка при создании текста: {str(e)[:150]}")
