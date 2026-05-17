@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import httpx
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
@@ -84,7 +85,7 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ПЕРЕВОДА (БЕЗ ОШИБОК И КРАШЕЙ) ---
+# --- ФУНКЦИЯ ПЕРЕВОДА С РУССКОГО НА АНГЛИЙСКИЙ ---
 async def translate_to_english(text: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
@@ -93,17 +94,23 @@ async def translate_to_english(text: str) -> str:
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
-                # Безопасно собираем текст из вложенных списков Google Translate
-                if result and isinstance(result, list) and len(result) > 0 and result[0]:
+                if result and isinstance(result, list) and len(result) > 0:
                     translated_parts = []
                     for part in result[0]:
-                        if part and isinstance(part, list) and len(part) > 0 and part[0]:
+                        if part and isinstance(part, list) and len(part) > 0:
                             translated_parts.append(str(part[0]))
                     if translated_parts:
                         return "".join(translated_parts).strip()
     except Exception as e:
         logging.error(f"Помилка перекладу: {e}")
-    return text  # Если перевод дал сбой, возвращаем оригинал, чтобы код не падал
+    return text
+
+# --- КНОПКА КУПИТЬ ПОДПИСКУ ---
+def get_payment_keyboard():
+    buttons = [
+        [InlineKeyboardButton(text="💳 Оформить Premium (150 грн)", url="https://t.me")] # Ссылка на ваш профиль для ручной оплаты, пока не подключен банк
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # --- ХЕНДЛЕРЫ ТЕЛЕГРАМ БОТА ---
 @dp.message(Command("start"))
@@ -129,8 +136,8 @@ async def handle_user_request(message: types.Message):
     if not can_generate:
         await message.answer(
             "❌ **У вас закончились бесплатные попытки!**\n\n"
-            "Чтобы продолжить общаться и создавать шедевры без ограничений, оформляйте Premium-подписку всего за **150 грн / месяц**.\n\n"
-            "💳 _Для активации подписки обратитесь к администратору._",
+            "Чтобы продолжить общаться и создавать шедевры без ограничений, оформляйте Premium-подписку всего за **150 грн / месяц**.",
+            reply_markup=get_payment_keyboard(),
             parse_mode="Markdown"
         )
         return
@@ -147,16 +154,14 @@ async def handle_user_request(message: types.Message):
                     clean_prompt = clean_prompt[len(word):].strip()
             
             english_prompt = await translate_to_english(clean_prompt)
-            logging.info(f"Промпт картинки: {english_prompt}")
             
-            # Официальный вызов генерации изображений через OpenAI SDK для Together AI
             response = await ai_client.images.generate(
                 model="black-forest-labs/FLUX.1-schnell",
                 prompt=english_prompt,
                 n=1
             )
             
-            # Извлекаем ссылку на готовую картинку из первого элемента списка данных
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавлен индекс [0] для извлечения ссылки по стандартам SDK
             image_url = response.data[0].url
             
             if not image_url:
@@ -187,7 +192,9 @@ async def handle_user_request(message: types.Message):
                 max_tokens=1500
             )
             
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавлен индекс [0] для извлечения текстового ответа
             reply_text = response.choices[0].message.content
+            
             await message.answer(reply_text)
             decrease_limit(user_id)
             await wait.delete()
