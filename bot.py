@@ -77,7 +77,7 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# --- ФУНКЦИЯ ПЕРЕВОДА С РУССКОГО НА АНГЛИЙСКИЙ ---
+# --- СТАБИЛЬНАЯ ФУНКЦИЯ ПЕРЕВОДА ---
 async def translate_to_english(text: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
@@ -87,7 +87,10 @@ async def translate_to_english(text: str) -> str:
             if response.status_code == 200:
                 result = response.json()
                 if result and isinstance(result, list) and len(result) > 0:
-                    translated_text = "".join([part for part in result if part and isinstance(part, str)])
+                    translated_text = ""
+                    for item in result[0]:
+                        if item and isinstance(item, list) and len(item) > 0:
+                            translated_text += str(item[0])
                     if translated_text:
                         return translated_text.strip()
     except Exception as e:
@@ -126,7 +129,7 @@ async def handle_user_request(message: types.Message):
 
     user_text = message.text.lower().strip()
     
-    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ (ПРЯМОЙ HTTPX ЗАПРОС)
+    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ
     if user_text.startswith(("нарисуй", "картинка", "фото", "draw", "image", "picture")):
         wait = await message.answer(f"🎨 **Syntax AI** генерирует ваше изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
         try:
@@ -158,6 +161,7 @@ async def handle_user_request(message: types.Message):
                     raise Exception(f"Together HTTP {resp.status_code}: {resp.text[:100]}")
                 
                 result = resp.json()
+                # ИСПРАВЛЕНО: Строгое извлечение ссылки из списка по индексу [0]
                 image_url = result["data"][0]["url"]
             
             await bot.send_photo(
@@ -172,7 +176,7 @@ async def handle_user_request(message: types.Message):
             logging.error(f"Помилка фото: {e}")
             await wait.edit_text(f"❌ Ошибка при создании фото: {str(e)[:150]}")
 
-    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ (ПРЯМОЙ HTTPX ЗАПРОС)
+    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ
     else:
         wait = await message.answer("⚡ **Syntax AI** думает над ответом...")
         try:
@@ -197,6 +201,7 @@ async def handle_user_request(message: types.Message):
                     raise Exception(f"Together HTTP {resp.status_code}: {resp.text[:100]}")
                 
                 result = resp.json()
+                # ИСПРАВЛЕНО: Строгое извлечение текста из списка по индексу [0]
                 reply_text = result["choices"][0]["message"]["content"]
             
             await message.answer(reply_text)
