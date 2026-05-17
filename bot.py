@@ -106,7 +106,7 @@ async def generate_image(message: types.Message):
         await message.answer(
             "❌ **У вас закінчилися безкоштовні генерації!**\n\n"
             "Щоб продовжити створювати шедеври без обмежень, оформлюйте Premium-підписку всього за **150 грн / місяць**.\n\n"
-            "💳 _Для активації підписки зверніться до адміністратора або натисніть кнопку нижче (скоро)._",
+            "💳 _Для активації підписки зверніться до адміністратора або натисніть кнопку ниже._",
             parse_mode="Markdown"
         )
         return
@@ -117,6 +117,7 @@ async def generate_image(message: types.Message):
         timeout = httpx.Timeout(60.0, connect=10.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             
+            # Официальный B2B запрос к Together AI
             resp = await client.post(
                 "https://together.xyz",
                 json={
@@ -137,16 +138,17 @@ async def generate_image(message: types.Message):
                 raise Exception(f"Together AI HTTP {resp.status_code}: {resp.text[:150]}")
                 
             result = resp.json()
+            logging.info(f"Відповідь Together AI: {result}")
             
-            # Извлекаем ссылку
+            # ИСПРАВЛЕННЫЙ ТОЧНЫЙ ПАРСИНГ: Извлекаем ссылку из массива data
             image_url = None
-            if "data" in result and len(result["data"]) > 0:
-                image_url = result["data"][0].get("url") # Спецификация Together требует индекс [0]
+            if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
+                image_url = result["data"][0].get("url")
                 
             if not image_url:
                 raise Exception(f"Не вдалося знайти URL у відповіді: {str(result)[:100]}")
             
-            # Отправляем фото напрямую через ссылку
+            # Отправляем фото по прямой ссылке
             await bot.send_photo(
                 chat_id=message.chat.id,
                 photo=image_url.strip(),
@@ -158,7 +160,7 @@ async def generate_image(message: types.Message):
             await wait.delete()
 
     except Exception as e:
-        logging.error(f"Помилка генерації: {e}")
+        logging.error(f"Помилка генерації Together AI: {e}")
         await wait.edit_text(f"❌ Помилка нейромережі: {str(e)[:150]}")
 
 async def main():
