@@ -27,7 +27,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"OK")
     def log_message(self, format, *args):
-        return  # Отключаем лишний спам в логи
+        return
 
 def start_health_server():
     port = int(os.environ.get("PORT", 10000))
@@ -48,6 +48,7 @@ async def generate(message: types.Message):
         timeout = httpx.Timeout(60.0, connect=10.0)
         
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            # МЕНЯЕМ НА ПРЯМОЙ ОБХОДНОЙ ШЛЮЗ БЭКЭНДА
             resp = await client.post(
                 "https://pixazo.ai",
                 json={
@@ -61,63 +62,65 @@ async def generate(message: types.Message):
                 }
             )
             
-            if resp.status_code not in [200, 201, 202]:
-                raise Exception(f"HTTP {resp.status_code}: {resp.text[:150]}")
+            # Если первый шлюз выбивает ошибку JSON, автоматически пробуем прямой Node-хост Pixazo
+            if resp.status_code != 200 or "application/json" not in resp.headers.get("Content-Type", "").lower():
+                resp = await client.post(
+                    "https://pixazo.ai",
+                    json={
+                        "prompt": message.text,
+                        "image_size": "landscape_16_9"
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "Cache-Control": "no-cache",
+                        "Ocp-Apim-Subscription-Key": PIXAZO_KEY 
+                    }
+                )
+
+            # Тотальная проверка ответа сервера перед чтением JSON
+            content_type = resp.headers.get("Content-Type", "").lower()
+            if "application/json" not in content_type:
+                raw_response = resp.text.strip() if resp.text else f"Порожня відповідь (Код {resp.status_code})"
+                raise Exception(f"Pixazo відхилив запит. Текст відповіді: {raw_response[:100]}")
             
             result = resp.json()
             logging.info(f"Завдання створено: {result}")
             
+            # Пробуем достать прямую ссылку на готовую картинку (если шлюз выдал её сразу)
+            image_url = result.get("output") or result.get("url") or result.get("data", {}).get("url")
+            
+            # Если шлюз асинхронный и выдал ссылку на опрос статуса
             polling_url = result.get("polling_url")
             request_id = result.get("request_id")
             
-            if not polling_url and request_id:
-                polling_url = f"https://pixazo.ai{request_id}"
+            if not image_url and (polling_url or request_id):
+                if not polling_url:
+                    polling_url = f"https://pixazo.ai{request_id}"
                 
-            if not polling_url:
-                image_url = result.get("output") or result.get("url")
-                if image_url:
-                    await bot.send_photo(chat_id=message.chat.id, photo=image_url.strip(), caption=f"✅ Готово!\n\n{message.text}")
-                    await wait.delete()
-                    return
-                raise Exception("Сервер не повернув посилання для відстеження статусу.")
-            
-            image_url = None
-            max_attempts = 25  
-            
-            for attempt in range(max_attempts):
-                await asyncio.sleep(3)
-                
-                try:
-                    await wait.edit_text(f"🎨 Нейромережа малює... Спроба {attempt + 1}/{max_attempts}")
-                except Exception:
-                    pass
-                
-                status_resp = await client.get(polling_url, headers={"Ocp-Apim-Subscription-Key": PIXAZO_KEY})
-                
-                if status_resp.status_code not in [200, 201, 202]:
-                    continue
-                
-                status_content_type = status_resp.headers.get("Content-Type", "").lower()
-                if "application/json" not in status_content_type:
-                    continue
-                
-                status_data = status_resp.json()
-                current_status = status_data.get("status", "").upper()
-                
-                if current_status == "COMPLETED":
-                    image_url = status_data.get("output") or status_data.get("url")
-                    if not image_url and "data" in status_data:
-                        if isinstance(status_data["data"], dict):
-                            image_url = status_data["data"].get("url")
-                        elif isinstance(status_data["data"], list) and len(status_data["data"]) > 0:
-                            image_url = status_data["data"][0].get("url") if isinstance(status_data["data"][0], dict) else status_data["data"][0]
-                    break
-                elif current_status in ["FAILED", "ERROR"]:
-                    raise Exception(f"Збій генерації: {status_data.get('error', 'Помилка')}")
-            
+                max_attempts = 20
+                for attempt in range(max_attempts):
+                    await asyncio.sleep(3)
+                    
+                    try:
+                        await wait.edit_text(f"🎨 Нейромережа малює... Спроба {attempt + 1}/{max_attempts}")
+                    except Exception:
+                        pass
+                    
+                    status_resp = await client.get(polling_url, headers={"Ocp-Apim-Subscription-Key": PIXAZO_KEY})
+                    if "application/json" not in status_resp.headers.get("Content-Type", "").lower():
+                        continue
+                        
+                    status_data = status_resp.json()
+                    if status_data.get("status", "").upper() == "COMPLETED":
+                        image_url = status_data.get("output") or status_data.get("url") or status_data.get("data", {}).get("url")
+                        break
+                    elif status_data.get("status", "").upper() in ["FAILED", "ERROR"]:
+                        raise Exception(f"Збій генерації: {status_data.get('error')}")
+
             if not image_url:
-                raise Exception("Час очікування генерації вичерпано.")
+                raise Exception("Не вдалося знайти або дочекатися посилання на медіафайл.")
             
+            # Отправляем прямую ссылку в Telegram. Сервера TG сами скачают её из облака
             await bot.send_photo(
                 chat_id=message.chat.id,
                 photo=image_url.strip(),
@@ -127,15 +130,11 @@ async def generate(message: types.Message):
 
     except Exception as e:
         logging.error(f"Помилка: {e}")
-        await wait.edit_text(f"❌ Помилка: {str(e)[:300]}")
+        await wait.edit_text(f"❌ Помилка шлюзу Pixazo: {str(e)[:300]}")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    
-    # Запускаем фоновый веб-сервер в отдельном потоке, чтобы он не мешал боту
     threading.Thread(target=start_health_server, daemon=True).start()
-    
-    # Запускаем Telegram-бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
