@@ -84,7 +84,7 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# --- ФУНКЦИЯ ПЕРЕВОДА С РУССКОГО НА АНГЛИЙСКИЙ ---
+# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ПЕРЕВОДА (БЕЗ ОШИБОК И КРАШЕЙ) ---
 async def translate_to_english(text: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
@@ -93,12 +93,17 @@ async def translate_to_english(text: str) -> str:
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
-                # Корректная сборка переведенного текста без багов
-                translated_text = "".join([part[0] for part in result[0] if part[0]])
-                return translated_text.strip()
+                # Безопасно собираем текст из вложенных списков Google Translate
+                if result and isinstance(result, list) and len(result) > 0 and result[0]:
+                    translated_parts = []
+                    for part in result[0]:
+                        if part and isinstance(part, list) and len(part) > 0 and part[0]:
+                            translated_parts.append(str(part[0]))
+                    if translated_parts:
+                        return "".join(translated_parts).strip()
     except Exception as e:
         logging.error(f"Помилка перекладу: {e}")
-    return text
+    return text  # Если перевод дал сбой, возвращаем оригинал, чтобы код не падал
 
 # --- ХЕНДЛЕРЫ ТЕЛЕГРАМ БОТА ---
 @dp.message(Command("start"))
@@ -142,15 +147,16 @@ async def handle_user_request(message: types.Message):
                     clean_prompt = clean_prompt[len(word):].strip()
             
             english_prompt = await translate_to_english(clean_prompt)
+            logging.info(f"Промпт картинки: {english_prompt}")
             
-            # ИСПРАВЛЕНО: Правильный вызов генерации картинок через OpenAI SDK для Together AI
+            # Официальный вызов генерации изображений через OpenAI SDK для Together AI
             response = await ai_client.images.generate(
                 model="black-forest-labs/FLUX.1-schnell",
                 prompt=english_prompt,
                 n=1
             )
             
-            # ИСПРАВЛЕНО: Безопасное извлечение ссылки по официальному стандарту SDK
+            # Извлекаем ссылку на готовую картинку из первого элемента списка данных
             image_url = response.data[0].url
             
             if not image_url:
