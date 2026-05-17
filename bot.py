@@ -77,7 +77,7 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# --- СТАБИЛЬНАЯ ФУНКЦИЯ ПЕРЕВОДА ---
+# --- ИСПРАВЛЕННАЯ СТАБИЛЬНАЯ ФУНКЦИЯ ПЕРЕВОДА ---
 async def translate_to_english(text: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
@@ -86,11 +86,12 @@ async def translate_to_english(text: str) -> str:
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
-                if result and isinstance(result, list) and len(result) > 0:
+                # ИСПРАВЛЕНО: Безопасное извлечение только переведенной строки
+                if result and isinstance(result, list) and len(result) > 0 and result[0]:
                     translated_text = ""
                     for item in result[0]:
-                        if item and isinstance(item, list) and len(item) > 0:
-                            translated_text += str(item[0])
+                        if item and isinstance(item, list) and len(item) > 0 and isinstance(item[0], str):
+                            translated_text += item[0]
                     if translated_text:
                         return translated_text.strip()
     except Exception as e:
@@ -139,6 +140,7 @@ async def handle_user_request(message: types.Message):
                     clean_prompt = clean_prompt[len(word):].strip()
             
             english_prompt = await translate_to_english(clean_prompt)
+            logging.info(f"Чистый промпт для Flux: {english_prompt}")
             
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(
@@ -161,7 +163,6 @@ async def handle_user_request(message: types.Message):
                     raise Exception(f"Together HTTP {resp.status_code}: {resp.text[:100]}")
                 
                 result = resp.json()
-                # ИСПРАВЛЕНО: Строгое извлечение ссылки из списка по индексу [0]
                 image_url = result["data"][0]["url"]
             
             await bot.send_photo(
@@ -201,7 +202,6 @@ async def handle_user_request(message: types.Message):
                     raise Exception(f"Together HTTP {resp.status_code}: {resp.text[:100]}")
                 
                 result = resp.json()
-                # ИСПРАВЛЕНО: Строгое извлечение текста из списка по индексу [0]
                 reply_text = result["choices"][0]["message"]["content"]
             
             await message.answer(reply_text)
