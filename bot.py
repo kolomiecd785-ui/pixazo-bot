@@ -86,7 +86,7 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# --- ФУНКЦИЯ АВТО-ПЕРЕВОДА НА АНГЛИЙСКИЙ ---
+# --- ФУНКЦИЯ ПЕРЕВОДА С РУССКОГО НА АНГЛИЙСКИЙ ---
 async def translate_to_english(text: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
@@ -101,6 +101,7 @@ async def translate_to_english(text: str) -> str:
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
+                # Собираем переведенные строчки
                 translated_text = "".join([part[0] for part in result[0] if part[0]])
                 return translated_text.strip()
     except Exception as e:
@@ -141,25 +142,25 @@ async def generate_image(message: types.Message):
     wait = await message.answer(f"🎨 **Syntax AI** создаёт ваше изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
 
     try:
-        # Автоматически переводим запрос
+        # Переводим запрос пользователя на английский для нейросети
         english_prompt = await translate_to_english(message.text)
         logging.info(f"Оригинал: {message.text} -> Перевод: {english_prompt}")
         
-        # ИСПРАВЛЕНО: Используем официальный параметр 'size' вместо 'width'/'height' для OpenAI SDK
+        # Генерируем картинку по официальному стандарту OpenAI SDK
         response = await ai_client.images.generate(
             model="black-forest-labs/FLUX.1-schnell",
             prompt=english_prompt,
-            size="1024x768",  # Стандартное поддерживаемое разрешение для SDK
+            size="1024x768",  # Исправлено: передаем размер одной строкой
             n=1
         )
         
-        # Достаем готовую ссылку
+        # Вытаскиваем готовую ссылку на изображение
         image_url = response.data[0].url
         
         if not image_url:
             raise Exception("Не удалось извлечь URL из ответа нейросети.")
         
-        # Отправляем фото в Telegram
+        # Отправляем фото пользователю в Telegram
         await bot.send_photo(
             chat_id=message.chat.id,
             photo=image_url.strip(),
