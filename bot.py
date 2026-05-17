@@ -113,7 +113,7 @@ async def start(message: types.Message):
     can_generate, limit, is_prem = check_user_limit(message.from_user.id)
     
     text = (
-        f"👋 Привет, {message.from_user.first_name}! Добро пожаловать в **DM ПОМОЩНИК** 🚀\n\n"
+        f"👋 Привет, {message.from_user.first_name}! Добро пожаловать в **Syntax AI** 🚀\n\n"
         f"Я генерирую невероятные изображения с помощью передовой нейросети **Flux 1 Schnell**.\n"
     )
     if not is_prem:
@@ -132,7 +132,7 @@ async def generate_image(message: types.Message):
     if not can_generate:
         await message.answer(
             "❌ **У вас закончились бесплатные генерации!**\n\n"
-            "Чтобы продолжить создавать шедеври без ограничений, оформляйте Premium-подписку всего за **150 грн / месяц**.\n\n"
+            "Чтобы продолжить создавать шедевры без ограничений, оформляйте Premium-подписку всего за **150 грн / месяц**.\n\n"
             "💳 _Для активации подписки обратитесь к администратору._",
             parse_mode="Markdown"
         )
@@ -145,17 +145,15 @@ async def generate_image(message: types.Message):
         english_prompt = await translate_to_english(message.text)
         logging.info(f"Оригинал: {message.text} -> Перевод: {english_prompt}")
         
-        # Используем официальный SDK для генерации картинок через Together AI
+        # ИСПРАВЛЕНО: Используем официальный параметр 'size' вместо 'width'/'height' для OpenAI SDK
         response = await ai_client.images.generate(
             model="black-forest-labs/FLUX.1-schnell",
             prompt=english_prompt,
-            width=1024,
-            height=576,
-            steps=4,
+            size="1024x768",  # Стандартное поддерживаемое разрешение для SDK
             n=1
         )
         
-        # Безопасно достаем готовую ссылку из SDK
+        # Достаем готовую ссылку
         image_url = response.data[0].url
         
         if not image_url:
