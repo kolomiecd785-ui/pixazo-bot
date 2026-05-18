@@ -93,8 +93,8 @@ async def translate_to_english(text: str) -> str:
             response = await client.get(url, params=params, timeout=5.0)
             if response.status_code == 200:
                 result = response.json()
-                if result and isinstance(result, list) and len(result) > 0 and result:
-                    translated_text = "".join([str(part) for part in result if part and part])
+                if result and isinstance(result, list) and len(result) > 0 and result[0]:
+                    translated_text = "".join([str(part[0]) for part in result[0] if part and part[0]])
                     if translated_text:
                         return translated_text.strip()
     except Exception as e:
@@ -133,7 +133,7 @@ async def handle_user_request(message: types.Message):
 
     user_text = message.text.lower().strip()
     
-    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ (ИСПРАВЛЕНО НА .images)
+    # СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ
     if user_text.startswith(("нарисуй", "картинка", "фото", "draw", "image", "picture")):
         wait = await message.answer(f"🎨 **Syntax AI** генерирует изображение... (Осталось попыток: {limit if not is_prem else '∞'})")
         try:
@@ -147,10 +147,12 @@ async def handle_user_request(message: types.Message):
             response = await ai_client.images.generate(
                 model="black-forest-labs/FLUX.1-schnell",
                 prompt=english_prompt,
+                size="1024x768",  # ИСПРАВЛЕНО: Явно указали размер для Flux
                 n=1
             )
             
-            image_url = response.data.url
+            # ИСПРАВЛЕНО: Добавлен индекс [0] для извлечения первой ссылки из списка
+            image_url = response.data[0].url
             
             if not image_url:
                 raise Exception("Не удалось получить прямую ссылку.")
@@ -167,7 +169,7 @@ async def handle_user_request(message: types.Message):
             logging.error(f"Помилка фото: {e}")
             await wait.edit_text(f"❌ Ошибка при создании фото: {str(e)[:150]}")
 
-    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ (ИСПРАВЛЕНО НА .chat)
+    # СЦЕНАРИЙ 2: ТЕКСТОВЫЙ ДИАЛОГ
     else:
         wait = await message.answer("⚡ **Syntax AI** думает над ответом...")
         try:
@@ -180,7 +182,8 @@ async def handle_user_request(message: types.Message):
                 max_tokens=1500
             )
             
-            reply_text = response.choices.message.content
+            # ИСПРАВЛЕНО: Добавлен индекс [0] для извлечения текста ответа
+            reply_text = response.choices[0].message.content
             
             if not reply_text:
                 raise Exception("Не удалось извлечь текст.")
